@@ -370,6 +370,7 @@ function createGame() {
     particles: [],
     damageTexts: [],
     explosions: [],
+    magnetZones: [],
 
     grid: new SpatialGrid(128),
     targetUpdateTimer: 0,
@@ -437,9 +438,15 @@ function createProjectile() {
     color: '#fff',
     owner: 'player',
     life: 0,
+    maxLife: 0,
     piercing: false,
     hitSet: new Set(),
     weaponType: '',
+    isRocket: false,
+    isBoomerang: false,
+    boomerangReversed: false,
+    isMagnet: false,
+    magnetRadius: 0,
   };
 }
 
@@ -553,6 +560,72 @@ const WEAPON_DEFS = {
     slashLength: 300,
     slashWidth: 35,
   },
+  boomerang: {
+    name: '부메랑', icon: '🪃',
+    maxLevel: 8,
+    cooldownBase: 1.0,
+    damage: 35,
+    speed: 380,
+    color: '#AAFFAA',
+    radius: 7,
+    life: 1.6,
+    piercing: true,
+    projCount: 1,
+    area: 1.0,
+    isBoomerang: true,
+  },
+  flamethrower: {
+    name: '화염방사기', icon: '🔥',
+    maxLevel: 8,
+    cooldownBase: 0.4,
+    damage: 12,
+    speed: 0,
+    color: '#FF4400',
+    isFlame: true,
+    flameRadius: 80,
+    flameCone: Math.PI / 4,
+  },
+  shuriken: {
+    name: '표창', icon: '⭐',
+    maxLevel: 8,
+    cooldownBase: 0.5,
+    damage: 20,
+    speed: 700,
+    color: '#FFFFAA',
+    radius: 5,
+    life: 0.9,
+    piercing: true,
+    projCount: 3,
+    area: 1.0,
+  },
+  sniper: {
+    name: '저격총', icon: '🔭',
+    maxLevel: 8,
+    cooldownBase: 3.0,
+    damage: 200,
+    speed: 1200,
+    color: '#FF0088',
+    radius: 4,
+    life: 2.0,
+    piercing: true,
+    projCount: 1,
+    area: 1.0,
+  },
+  magnetBomb: {
+    name: '자기탄', icon: '🧲',
+    maxLevel: 8,
+    cooldownBase: 3.5,
+    damage: 70,
+    speed: 220,
+    color: '#AA88FF',
+    radius: 8,
+    life: 1.2,
+    piercing: false,
+    projCount: 1,
+    area: 1.0,
+    isMagnet: true,
+    magnetRadius: 120,
+  },
 };
 
 function createWeapon(type) {
@@ -574,7 +647,7 @@ function getWeaponLevel(w, statKey) {
     case 'damage': return Math.floor(d.damage * dmgMult);
     case 'cooldown': return Math.max(d.cooldownBase * (1 - lv * 0.08), d.cooldownBase * 0.3);
     case 'projCount': return d.projCount ? d.projCount + Math.floor(lv / 2) : 1;
-    case 'area': return (d.aoeRadius || d.pulseRadius || d.orbitRadius || 60) * (1 + lv * 0.15);
+    case 'area': return (d.aoeRadius || d.pulseRadius || d.orbitRadius || d.flameRadius || 60) * (1 + lv * 0.15);
     case 'count': return (d.count || 1) + Math.floor(lv / 2);
   }
 }
@@ -828,6 +901,7 @@ function update(g, dt) {
   updateDamageTexts(g, dt);
   updateExplosions(g, dt);
   updateAoeZones(g, dt);
+  updateMagnetZones(g, dt);
 
   // Rebuild spatial grid
   g.grid.clear();
@@ -840,13 +914,18 @@ function update(g, dt) {
 function updatePlayer(g, dt) {
   const p = g.player;
   let dx = 0, dy = 0;
-  if (keys['KeyW'] || keys['ArrowUp']) dy -= 1;
-  if (keys['KeyS'] || keys['ArrowDown']) dy += 1;
-  if (keys['KeyA'] || keys['ArrowLeft']) dx -= 1;
-  if (keys['KeyD'] || keys['ArrowRight']) dx += 1;
+  if (isMobile) {
+    dx = joystick.dx;
+    dy = joystick.dy;
+  } else {
+    if (keys['KeyW'] || keys['ArrowUp']) dy -= 1;
+    if (keys['KeyS'] || keys['ArrowDown']) dy += 1;
+    if (keys['KeyA'] || keys['ArrowLeft']) dx -= 1;
+    if (keys['KeyD'] || keys['ArrowRight']) dx += 1;
+  }
 
   if (dx !== 0 || dy !== 0) {
-    const len = Math.sqrt(dx * dx + dy * dy);
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
     p.x += (dx / len) * p.speed * dt;
     p.y += (dy / len) * p.speed * dt;
   }
@@ -1100,7 +1179,21 @@ function updateProjectiles(g, dt) {
     proj.x += proj.vx * dt;
     proj.y += proj.vy * dt;
     proj.life -= dt;
-    if (proj.life <= 0) { proj.active = false; continue; }
+    if (proj.life <= 0) {
+      if (proj.isMagnet) {
+        g.magnetZones.push({ x: proj.x, y: proj.y, radius: proj.magnetRadius, life: 1.0, damage: proj.damage });
+      }
+      proj.active = false;
+      continue;
+    }
+
+    // 부메랑: 수명 절반에서 방향 반전
+    if (proj.isBoomerang && !proj.boomerangReversed && proj.life < proj.maxLife / 2) {
+      proj.vx *= -1;
+      proj.vy *= -1;
+      proj.boomerangReversed = true;
+      proj.hitSet.clear();
+    }
 
     if (proj.owner === 'player') {
       const nearby = g.grid.query(proj.x, proj.y, 40 + proj.radius);
@@ -1115,6 +1208,11 @@ function updateProjectiles(g, dt) {
 
           if (proj.isRocket) {
             doExplosion(g, proj.x, proj.y, WEAPON_DEFS.rocket.explosionRadius * g.player.stats.area, proj.damage * g.player.stats.damage);
+            proj.active = false;
+            break;
+          }
+          if (proj.isMagnet) {
+            g.magnetZones.push({ x: proj.x, y: proj.y, radius: proj.magnetRadius, life: 1.0, damage: proj.damage });
             proj.active = false;
             break;
           }
@@ -1277,6 +1375,30 @@ function updateAoeZones(g, dt) {
   }
 }
 
+function updateMagnetZones(g, dt) {
+  for (let i = g.magnetZones.length - 1; i >= 0; i--) {
+    const z = g.magnetZones[i];
+    z.life -= dt;
+    if (z.life <= 0) {
+      doExplosion(g, z.x, z.y, z.radius, z.damage * g.player.stats.damage);
+      playSound('explode');
+      g.magnetZones.splice(i, 1);
+      continue;
+    }
+    // 적을 중심으로 끌어당김
+    const nearby = g.grid.query(z.x, z.y, z.radius + 60);
+    for (const e of nearby) {
+      if (!e.active) continue;
+      const dist = Math.hypot(e.x - z.x, e.y - z.y);
+      if (dist < z.radius + getEnemyRadius(e) && dist > 1) {
+        const pullSpd = 120 * dt;
+        e.x += ((z.x - e.x) / dist) * pullSpd;
+        e.y += ((z.y - e.y) / dist) * pullSpd;
+      }
+    }
+  }
+}
+
 function getSwordAngles(baseAngle, level) {
   if (level === 1) return [baseAngle];
   if (level <= 3) return [baseAngle, baseAngle + Math.PI];
@@ -1419,9 +1541,43 @@ function updateWeapons(g, dt) {
             proj.hitSet = new Set();
             proj.weaponType = w.type;
             proj.isRocket = true;
+            proj.isBoomerang = false;
+            proj.boomerangReversed = false;
+            proj.isMagnet = false;
+            proj.magnetRadius = 0;
           }
           p.muzzleFlash = 0.13;
           playSound('shoot');
+        }
+      }
+      continue;
+    }
+
+    // Flamethrower - 전방 원뿔 AOE
+    if (def.isFlame) {
+      if (w.cooldown <= 0) {
+        w.cooldown = getWeaponLevel(w, 'cooldown') / p.stats.attackSpeed;
+        const flameR = getWeaponLevel(w, 'area');
+        const dmg = getWeaponLevel(w, 'damage') * p.stats.damage;
+        g.explosions.push({
+          x: p.x + Math.cos(p.facing) * flameR * 0.4,
+          y: p.y + Math.sin(p.facing) * flameR * 0.4,
+          radius: flameR * 0.7,
+          color: '#FF4400',
+          damage: 0,
+          life: 0.12,
+          maxLife: 0.12,
+          isSpike: false,
+        });
+        const nearby = g.grid.query(p.x, p.y, flameR + 50);
+        for (const e of nearby) {
+          if (!e.active) continue;
+          const dist = Math.hypot(e.x - p.x, e.y - p.y);
+          if (dist > flameR + getEnemyRadius(e)) continue;
+          let ang = Math.atan2(e.y - p.y, e.x - p.x) - p.facing;
+          while (ang > Math.PI) ang -= Math.PI * 2;
+          while (ang < -Math.PI) ang += Math.PI * 2;
+          if (Math.abs(ang) < def.flameCone) hitEnemy(g, e, dmg);
         }
       }
       continue;
@@ -1455,9 +1611,11 @@ function updateWeapons(g, dt) {
       const dx2 = nearestEnemy.x - p.x;
       const dy2 = nearestEnemy.y - p.y;
       const len2 = Math.hypot(dx2, dy2) || 1;
+      // shuriken은 ±15° 고정, 나머지는 표준 0.4rad 분산
+      const spreadRange = (def.isShuriken || w.type === 'shuriken') ? 0.52 : 0.4;
 
       for (let i = 0; i < projCount; i++) {
-        const spread = (projCount > 1) ? ((i / (projCount - 1)) - 0.5) * 0.4 : 0;
+        const spread = (projCount > 1) ? ((i / (projCount - 1)) - 0.5) * spreadRange : 0;
         const cos = Math.cos(spread), sin2 = Math.sin(spread);
         const nx = dx2 / len2, ny = dy2 / len2;
         const fx = nx * cos - ny * sin2;
@@ -1473,10 +1631,15 @@ function updateWeapons(g, dt) {
         proj.color = def.color;
         proj.owner = 'player';
         proj.life = def.life;
-        proj.piercing = w.type === 'electric';
+        proj.maxLife = def.life;
+        proj.piercing = def.piercing || false;
         proj.hitSet = new Set();
         proj.weaponType = w.type;
         proj.isRocket = false;
+        proj.isBoomerang = def.isBoomerang || false;
+        proj.boomerangReversed = false;
+        proj.isMagnet = def.isMagnet || false;
+        proj.magnetRadius = def.isMagnet ? (def.magnetRadius * p.stats.area) : 0;
       }
       p.muzzleFlash = 0.13;
       playSound('shoot');
@@ -1836,6 +1999,18 @@ function render(g) {
     ctx.strokeRect(0, 0, W, H);
   }
 
+  // Magnet zones
+  for (const z of g.magnetZones) {
+    const alpha = z.life * 0.5;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#AA88FF';
+    ctx.beginPath(); ctx.arc(z.x + ox, z.y + oy, z.radius, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#CC88FF';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(z.x + ox, z.y + oy, z.radius, 0, Math.PI * 2); ctx.stroke();
+  }
+
   // Level up screen
   if (g.state === 'levelup') {
     drawLevelUp(g, W, H);
@@ -1845,6 +2020,9 @@ function render(g) {
   if (g.state === 'gameover') {
     drawGameOver(g, W, H);
   }
+
+  // 모바일 조이스틱
+  drawJoystick();
 }
 
 function drawBackground(g, ox, oy, W, H) {
@@ -2095,6 +2273,118 @@ function drawGameOver(g, W, H) {
   ctx.font = 'bold 22px monospace';
   ctx.fillText('다시 시작', W / 2, btnY + 33);
   ctx.textAlign = 'left';
+}
+
+// ============================================================
+// MOBILE JOYSTICK
+// ============================================================
+const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+const JOY_RADIUS = 65;
+let joystick = { active: false, baseX: 0, baseY: 0, knobX: 0, knobY: 0, dx: 0, dy: 0, touchId: -1 };
+
+function drawJoystick() {
+  if (!isMobile || !joystick.active) return;
+  const cx = joystick.baseX, cy = joystick.baseY;
+  ctx.save();
+  // 외곽 원
+  ctx.globalAlpha = 0.3;
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(cx, cy, JOY_RADIUS, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.05)';
+  ctx.fill();
+  // 노브
+  ctx.globalAlpha = 0.55;
+  ctx.fillStyle = '#AAAAFF';
+  ctx.beginPath(); ctx.arc(joystick.knobX, joystick.knobY, 24, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(joystick.knobX, joystick.knobY, 24, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  for (const t of e.changedTouches) {
+    const tx = t.clientX - rect.left;
+    const ty = t.clientY - rect.top;
+    if (joystick.touchId === -1 && tx < canvas.width / 2) {
+      joystick.active = true;
+      joystick.touchId = t.identifier;
+      joystick.baseX = tx; joystick.baseY = ty;
+      joystick.knobX = tx; joystick.knobY = ty;
+      joystick.dx = 0; joystick.dy = 0;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  for (const t of e.changedTouches) {
+    if (t.identifier === joystick.touchId) {
+      const tx = t.clientX - rect.left;
+      const ty = t.clientY - rect.top;
+      const ddx = tx - joystick.baseX;
+      const ddy = ty - joystick.baseY;
+      const dist = Math.hypot(ddx, ddy);
+      const clamped = Math.min(dist, JOY_RADIUS);
+      const angle = Math.atan2(ddy, ddx);
+      joystick.knobX = joystick.baseX + Math.cos(angle) * clamped;
+      joystick.knobY = joystick.baseY + Math.sin(angle) * clamped;
+      joystick.dx = Math.cos(angle) * (clamped / JOY_RADIUS);
+      joystick.dy = Math.sin(angle) * (clamped / JOY_RADIUS);
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  for (const t of e.changedTouches) {
+    if (t.identifier === joystick.touchId) {
+      joystick.active = false;
+      joystick.touchId = -1;
+      joystick.dx = 0; joystick.dy = 0;
+    } else {
+      // 오른쪽 탭 → 클릭 처리
+      const tx = t.clientX - rect.left;
+      const ty = t.clientY - rect.top;
+      if (tx >= canvas.width / 2) {
+        handleTap(tx, ty);
+      }
+    }
+  }
+}, { passive: false });
+
+function handleTap(mx, my) {
+  const W = canvas.width, H = canvas.height;
+  if (game.state === 'levelup') {
+    const cardW = 200, cardH = 160;
+    const totalW = game.levelUpCards.length * cardW + (game.levelUpCards.length - 1) * 20;
+    const startX = W / 2 - totalW / 2;
+    for (let i = 0; i < game.levelUpCards.length; i++) {
+      const cx = startX + i * (cardW + 20);
+      const cy = H / 2 - cardH / 2 - 20;
+      if (mx >= cx && mx <= cx + cardW && my >= cy && my <= cy + cardH) {
+        applyCard(game, game.levelUpCards[i]);
+        game.state = 'playing';
+        break;
+      }
+    }
+    return;
+  }
+  if (game.state === 'gameover') {
+    const btnW = 220, btnH = 50;
+    const btnX = W / 2 - btnW / 2;
+    const btnY = H / 2 + 65;
+    if (mx >= btnX && mx <= btnX + btnW && my >= btnY && my <= btnY + btnH) {
+      game = createGame();
+      game.player.weapons.push(createWeapon('pistol'));
+    }
+  }
 }
 
 // ============================================================
