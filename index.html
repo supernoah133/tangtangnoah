@@ -2,18 +2,69 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>웨이브 깨기 - Pixel Zombie Survival</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; font-family: monospace; }
 canvas { display: block; image-rendering: pixelated; }
-#ui-overlay {
-  position: absolute; top: 0; left: 0; width: 100%; pointer-events: none;
+#ui-overlay { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
+
+#overlay {
+  position: fixed; inset: 0;
+  background: rgba(8,10,14,0.97);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  z-index: 200; color: #fff; font-family: monospace;
+  padding: 20px;
 }
+#overlay h1 { font-size: 2rem; color: #FFD700; margin-bottom: 4px; letter-spacing: 2px; }
+#overlay h2 { font-size: 1.1rem; color: #AAFFAA; margin-bottom: 28px; }
+#overlay .card {
+  background: #111620; border: 1px solid #2a3040;
+  border-radius: 10px; padding: 28px 36px;
+  display: flex; flex-direction: column; gap: 12px;
+  width: 100%; max-width: 360px;
+}
+#overlay .card h3 { color: #FFD700; font-size: 1.1rem; margin-bottom: 4px; text-align: center; }
+#overlay input {
+  background: #0c1018; border: 1px solid #334; border-radius: 6px;
+  color: #fff; font-family: monospace; font-size: 1rem;
+  padding: 10px 14px; outline: none; transition: border-color .2s;
+}
+#overlay input:focus { border-color: #4488FF; }
+#overlay input::placeholder { color: #555; }
+#overlay button {
+  font-family: monospace; font-size: 1rem; font-weight: bold;
+  padding: 11px; border: none; border-radius: 6px; cursor: pointer;
+  transition: filter .15s;
+}
+#overlay button:hover { filter: brightness(1.2); }
+#overlay .btn-primary { background: #1a4a1a; color: #44FF44; border: 1px solid #226622; }
+#overlay .btn-secondary { background: #1a1a3a; color: #88AAFF; border: 1px solid #223366; }
+#overlay .btn-start { background: #2a1a0a; color: #FFAA44; border: 1px solid #664422; font-size: 1.1rem; }
+#overlay .btn-danger { background: #2a0a0a; color: #FF6666; border: 1px solid #661111; font-size: 0.85rem; }
+#overlay .toggle { text-align: center; color: #666; font-size: 0.85rem; }
+#overlay .toggle span { color: #88AAFF; cursor: pointer; text-decoration: underline; }
+#overlay .err { color: #FF6666; font-size: 0.85rem; text-align: center; min-height: 18px; }
+#overlay .ok  { color: #44FF44; font-size: 0.85rem; text-align: center; min-height: 18px; }
+
+/* 랭킹 */
+#overlay .ranking-wrap { width: 100%; max-width: 480px; }
+#overlay table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+#overlay table th { color: #FFD700; padding: 6px 10px; border-bottom: 1px solid #333; text-align: left; }
+#overlay table td { padding: 7px 10px; border-bottom: 1px solid #1a1a2a; }
+#overlay table tr:first-child td { color: #FFD700; }
+#overlay table tr:nth-child(2) td { color: #AAAAAA; }
+#overlay table tr:nth-child(3) td { color: #CD7F32; }
+#overlay .rank-user { color: #88AAFF; font-weight: bold; }
+#overlay .user-info { text-align: center; color: #888; font-size: 0.82rem; margin-bottom: 10px; }
+#overlay .user-info strong { color: #AAFFAA; }
 </style>
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
+<div id="overlay"></div>
 <script>
 // ============================================================
 // CONSTANTS
@@ -1743,12 +1794,13 @@ function getEnemyColor(e) {
 
 function gameOver(g) {
   g.state = 'gameover';
-  // Save best scores
   const best = JSON.parse(localStorage.getItem('zombieBest') || '{}');
   if (!best.time || g.time > best.time) best.time = g.time;
   if (!best.kills || g.kills > best.kills) best.kills = g.kills;
   if (!best.wave || g.wave > best.wave) best.wave = g.wave;
   localStorage.setItem('zombieBest', JSON.stringify(best));
+  // Supabase 점수 저장
+  saveScore(g.time, g.kills, g.wave);
 }
 
 // ============================================================
@@ -2446,16 +2498,162 @@ let lastTime = 0;
 function loop(ts) {
   const dt = Math.min((ts - lastTime) / 1000, 0.05);
   lastTime = ts;
-  update(game, dt);
-  render(game);
+  if (game) {
+    update(game, dt);
+    render(game);
+    // 게임오버 후 랭킹 표시
+    if (game.state === 'gameover' && !game._rankingShown) {
+      game._rankingShown = true;
+      setTimeout(() => showRanking(), 2500);
+    }
+  }
   requestAnimationFrame(loop);
 }
 
-// Init
-game = createGame();
-game.player.weapons.push(createWeapon('pistol'));
-
+// Init - 게임루프는 startGame()에서 시작
 requestAnimationFrame(ts => { lastTime = ts; requestAnimationFrame(loop); });
+
+function startGame() {
+  document.getElementById('overlay').style.display = 'none';
+  game = createGame();
+  game.player.weapons.push(createWeapon('pistol'));
+}
+
+// ============================================================
+// SUPABASE AUTH & RANKING
+// ============================================================
+const SUPA_URL = 'https://ulnbpvcaigmobuczbuda.supabase.co';
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsbmJwdmNhaWdtb2J1Y3pidWRhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMwNTU5MTgsImV4cCI6MjA5ODYzMTkxOH0.sbd3kjqjTdlp_yR8jM3dehtCNjhg8BdpVFUtpGo8MtQ';
+const supa = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+let currentUser = null;
+
+async function saveScore(time, kills, wave) {
+  if (!currentUser) return;
+  const username = currentUser.user_metadata?.username || currentUser.email?.split('@')[0] || '익명';
+  await supa.from('scores').insert({ user_id: currentUser.id, username, time_survived: time, kills, wave });
+}
+
+async function fetchRanking() {
+  const { data } = await supa.from('scores').select('username, kills, wave, time_survived').order('kills', { ascending: false }).limit(10);
+  return data || [];
+}
+
+function fmt(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function showLogin(msg = '') {
+  const ov = document.getElementById('overlay');
+  ov.style.display = 'flex';
+  ov.innerHTML = `
+    <h1>웨이브 깨기</h1>
+    <h2>PIXEL ZOMBIE SURVIVAL</h2>
+    <div class="card">
+      <h3>🔐 로그인</h3>
+      <input id="l-email" type="email" placeholder="이메일" autocomplete="email">
+      <input id="l-pass"  type="password" placeholder="비밀번호" autocomplete="current-password">
+      <button class="btn-primary" onclick="doLogin()">로그인</button>
+      <div class="err" id="l-err">${msg}</div>
+      <div class="toggle">계정이 없으신가요? <span onclick="showRegister()">회원가입</span></div>
+    </div>`;
+  ov.querySelector('#l-email').addEventListener('keydown', e => e.key === 'Enter' && doLogin());
+  ov.querySelector('#l-pass').addEventListener('keydown', e => e.key === 'Enter' && doLogin());
+}
+
+function showRegister(msg = '') {
+  const ov = document.getElementById('overlay');
+  ov.style.display = 'flex';
+  ov.innerHTML = `
+    <h1>웨이브 깨기</h1>
+    <h2>PIXEL ZOMBIE SURVIVAL</h2>
+    <div class="card">
+      <h3>📝 회원가입</h3>
+      <input id="r-name"  type="text"     placeholder="닉네임" maxlength="16">
+      <input id="r-email" type="email"    placeholder="이메일" autocomplete="email">
+      <input id="r-pass"  type="password" placeholder="비밀번호 (6자 이상)" autocomplete="new-password">
+      <button class="btn-secondary" onclick="doRegister()">가입하기</button>
+      <div class="err" id="r-err">${msg}</div>
+      <div class="toggle">이미 계정이 있으신가요? <span onclick="showLogin()">로그인</span></div>
+    </div>`;
+}
+
+async function showRanking() {
+  const ov = document.getElementById('overlay');
+  ov.style.display = 'flex';
+  const username = currentUser?.user_metadata?.username || currentUser?.email?.split('@')[0] || '?';
+  ov.innerHTML = `
+    <h1>웨이브 깨기</h1>
+    <div class="ranking-wrap">
+      <div class="user-info">접속 중: <strong>${username}</strong>
+        &nbsp;·&nbsp;<span style="cursor:pointer;color:#FF8888;text-decoration:underline" onclick="doLogout()">로그아웃</span>
+      </div>
+      <div class="card" style="gap:0;padding:16px 20px;margin-bottom:14px">
+        <h3 style="margin-bottom:12px">🏆 킬 수 랭킹 TOP 10</h3>
+        <table id="rank-table"><thead><tr><th>#</th><th>닉네임</th><th>킬수</th><th>웨이브</th><th>생존시간</th></tr></thead>
+        <tbody><tr><td colspan="5" style="color:#555;text-align:center;padding:16px">불러오는 중...</td></tr></tbody></table>
+      </div>
+      <button class="btn-start" style="width:100%;padding:14px;font-size:1.2rem" onclick="startGame()">🎮 게임 시작!</button>
+    </div>`;
+  const rows = await fetchRanking();
+  const medals = ['🥇', '🥈', '🥉'];
+  const tbody = ov.querySelector('#rank-table tbody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:#555;text-align:center;padding:16px">아직 기록이 없습니다</td></tr>';
+  } else {
+    tbody.innerHTML = rows.map((r, i) => {
+      const isMe = r.username === username;
+      return `<tr>
+        <td>${medals[i] || (i + 1)}</td>
+        <td class="${isMe ? 'rank-user' : ''}">${r.username}${isMe ? ' ◀' : ''}</td>
+        <td>💀 ${r.kills}</td>
+        <td>🌊 ${r.wave}</td>
+        <td>⏱ ${fmt(r.time_survived)}</td>
+      </tr>`;
+    }).join('');
+  }
+}
+
+async function doLogin() {
+  const email = document.getElementById('l-email').value.trim();
+  const pass  = document.getElementById('l-pass').value;
+  document.getElementById('l-err').textContent = '로그인 중...';
+  const { data, error } = await supa.auth.signInWithPassword({ email, password: pass });
+  if (error) { document.getElementById('l-err').textContent = '❌ ' + (error.message === 'Invalid login credentials' ? '이메일 또는 비밀번호가 틀렸습니다' : error.message); return; }
+  currentUser = data.user;
+  showRanking();
+}
+
+async function doRegister() {
+  const name  = document.getElementById('r-name').value.trim();
+  const email = document.getElementById('r-email').value.trim();
+  const pass  = document.getElementById('r-pass').value;
+  if (!name) { document.getElementById('r-err').textContent = '❌ 닉네임을 입력하세요'; return; }
+  if (pass.length < 6) { document.getElementById('r-err').textContent = '❌ 비밀번호는 6자 이상이어야 합니다'; return; }
+  document.getElementById('r-err').textContent = '가입 중...';
+  const { data, error } = await supa.auth.signUp({ email, password: pass, options: { data: { username: name } } });
+  if (error) { document.getElementById('r-err').textContent = '❌ ' + error.message; return; }
+  currentUser = data.user;
+  showRanking();
+}
+
+async function doLogout() {
+  await supa.auth.signOut();
+  currentUser = null;
+  showLogin();
+}
+
+// 페이지 로드 시: 기존 세션 확인
+(async () => {
+  const { data } = await supa.auth.getSession();
+  if (data.session?.user) {
+    currentUser = data.session.user;
+    showRanking();
+  } else {
+    showLogin();
+  }
+})();
 </script>
 </body>
 </html>
