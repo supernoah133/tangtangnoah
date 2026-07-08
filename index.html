@@ -382,11 +382,6 @@ window.addEventListener('resize', resize);
 const keys = {};
 window.addEventListener('keydown', e => {
   keys[e.code] = true;
-  if (e.code === 'KeyI' && game && game.state === 'playing') {
-    game._forceLegendary = true;
-    game.player.xp = game.player.xpToNext;
-    checkLevelUp(game);
-  }
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -1436,10 +1431,11 @@ function updateMagnetZones(g, dt) {
       g.magnetZones.splice(i, 1);
       continue;
     }
-    // 적을 중심으로 끌어당김
+    // 적을 중심으로 끌어당김 (플레이어 근처 50px 이내 적은 스킵 — 자해 방지)
     const nearby = g.grid.query(z.x, z.y, z.radius + 60);
     for (const e of nearby) {
       if (!e.active) continue;
+      if (Math.hypot(e.x - g.player.x, e.y - g.player.y) < 50) continue;
       const dist = Math.hypot(e.x - z.x, e.y - z.y);
       if (dist < z.radius + getEnemyRadius(e) && dist > 1) {
         const pullSpd = 120 * dt;
