@@ -2412,6 +2412,7 @@ canvas.addEventListener('touchend', e => {
 }, { passive: false });
 
 function handleTap(mx, my) {
+  if (!game) return;
   const W = canvas.width, H = canvas.height;
   if (game.state === 'levelup') {
     const cardW = 200, cardH = 160;
@@ -2427,15 +2428,6 @@ function handleTap(mx, my) {
       }
     }
     return;
-  }
-  if (game.state === 'gameover') {
-    const btnW = 220, btnH = 50;
-    const btnX = W / 2 - btnW / 2;
-    const btnY = H / 2 + 65;
-    if (mx >= btnX && mx <= btnX + btnW && my >= btnY && my <= btnY + btnH) {
-      game = createGame();
-      game.player.weapons.push(createWeapon('pistol'));
-    }
   }
 }
 
@@ -2457,6 +2449,7 @@ function isMouseOverRect(rx, ry, rw, rh) {
 }
 
 canvas.addEventListener('click', e => {
+  if (!game) return;
   const rect = canvas.getBoundingClientRect();
   const mx = e.clientX - rect.left;
   const my = e.clientY - rect.top;
@@ -2478,16 +2471,6 @@ canvas.addEventListener('click', e => {
     return;
   }
 
-  if (game.state === 'gameover') {
-    const btnW = 220, btnH = 50;
-    const btnX = W / 2 - btnW / 2;
-    const btnY = H / 2 + 65;
-    if (mx >= btnX && mx <= btnX + btnW && my >= btnY && my <= btnY + btnH) {
-      game = createGame();
-      // Give starter weapon
-      game.player.weapons.push(createWeapon('pistol'));
-    }
-  }
 });
 
 // ============================================================
@@ -2580,6 +2563,7 @@ function showRegister(msg = '') {
 }
 
 async function showRanking() {
+  game = null;
   const ov = document.getElementById('overlay');
   ov.style.display = 'flex';
   const username = currentUser?.user_metadata?.username || currentUser?.email?.split('@')[0] || '?';
