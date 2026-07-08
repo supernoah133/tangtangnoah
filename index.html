@@ -1331,7 +1331,7 @@ function killEnemy(g, e) {
   if (e.isBoss) addShake(g, 15, 0.5);
 }
 
-function doExplosion(g, x, y, radius, damage) {
+function doExplosion(g, x, y, radius, damage, skipPlayer = false) {
   g.explosions.push({
     x, y, radius,
     color: '#FF6600',
@@ -1356,7 +1356,7 @@ function doExplosion(g, x, y, radius, damage) {
   }
   // Player
   const pd = Math.hypot(g.player.x - x, g.player.y - y);
-  if (pd < radius + 16) {
+  if (!skipPlayer && pd < radius + 16) {
     const dmg = Math.max(1, Math.floor(damage * 0.3 * (1 - pd / radius) - g.player.defense));
     if (dmg > 0) {
       g.player.hp -= dmg;
@@ -1426,16 +1426,15 @@ function updateMagnetZones(g, dt) {
     const z = g.magnetZones[i];
     z.life -= dt;
     if (z.life <= 0) {
-      doExplosion(g, z.x, z.y, z.radius, z.damage * g.player.stats.damage);
+      doExplosion(g, z.x, z.y, z.radius, z.damage * g.player.stats.damage, true);
       playSound('explode');
       g.magnetZones.splice(i, 1);
       continue;
     }
-    // 적을 중심으로 끌어당김 (플레이어 근처 50px 이내 적은 스킵 — 자해 방지)
+    // 적을 중심으로 끌어당김
     const nearby = g.grid.query(z.x, z.y, z.radius + 60);
     for (const e of nearby) {
       if (!e.active) continue;
-      if (Math.hypot(e.x - g.player.x, e.y - g.player.y) < 50) continue;
       const dist = Math.hypot(e.x - z.x, e.y - z.y);
       if (dist < z.radius + getEnemyRadius(e) && dist > 1) {
         const pullSpd = 120 * dt;
