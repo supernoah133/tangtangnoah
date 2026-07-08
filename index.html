@@ -2514,7 +2514,14 @@ let currentUser = null;
 async function saveScore(time, kills, wave) {
   if (!currentUser) return;
   const username = currentUser.user_metadata?.username || currentUser.email?.split('@')[0] || '익명';
-  await supa.from('scores').insert({ user_id: currentUser.id, username, time_survived: time, kills, wave });
+  const { data: existing } = await supa.from('scores').select('id, kills').eq('user_id', currentUser.id).maybeSingle();
+  if (existing) {
+    if (kills > existing.kills) {
+      await supa.from('scores').update({ username, time_survived: time, kills, wave }).eq('id', existing.id);
+    }
+  } else {
+    await supa.from('scores').insert({ user_id: currentUser.id, username, time_survived: time, kills, wave });
+  }
 }
 
 async function fetchRanking() {
